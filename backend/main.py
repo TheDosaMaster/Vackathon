@@ -66,7 +66,10 @@ CLIENT_CONFIG = {
 }
 
 
-def gemini_generate(prompt, system_instruction=None, json_mode=False, temperature=0.35, response_schema=None):
+def gemini_generate(
+    prompt, system_instruction=None, json_mode=False, temperature=0.35,
+    response_schema=None, max_output_tokens=1400,
+):
     if not GEMINI_API_KEY:
         raise RuntimeError("GEMINI_API_KEY is not configured.")
 
@@ -74,7 +77,7 @@ def gemini_generate(prompt, system_instruction=None, json_mode=False, temperatur
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {
             "temperature": temperature,
-            "maxOutputTokens": 1400,
+            "maxOutputTokens": max_output_tokens,
         },
     }
     if system_instruction:
@@ -199,7 +202,7 @@ def calendar_event_payload(title, start, end, description=""):
     if (end_dt - start_dt).total_seconds() > 24 * 60 * 60:
         raise ValueError("Calendar events created by Vachan cannot exceed 24 hours.")
     return {
-        "summary": str(title).strip()[:200] or "Priority:One event",
+        "summary": re.sub(r"\s+", " ", str(title)).strip()[:200] or "Priority:One event",
         "description": str(description).strip()[:2000],
         "start": {"dateTime": start_dt.isoformat()},
         "end": {"dateTime": end_dt.isoformat()},
@@ -556,7 +559,8 @@ def ai_chat():
         "You are Vachan, Priority:One's deeply supportive planning companion. Be calm, validating, concise, "
         "and practical without sounding clinical or patronizing. Use only the supplied assignments and calendar "
         "events. When the student clearly asks to add, move, rename, or delete calendar time, return the minimum "
-        "required Google Calendar actions. Never modify school or sleep blocks. Never claim an action succeeded; "
+        "required Google Calendar actions. Never modify school or sleep blocks. Say you can make the change, "
+        "but never claim an action succeeded; "
         "the server will append the actual result. Resolve relative dates using currentTime and timezone."
     )
     prompt = json.dumps({
@@ -575,20 +579,23 @@ def ai_chat():
     schema = {
         "type": "object",
         "properties": {
-            "text": {"type": "string"},
+            "text": {
+                "type": "string",
+                "description": "Supportive reply under 240 characters. Do not claim a calendar action succeeded.",
+            },
             "actions": {
                 "type": "array",
+                "maxItems": 1,
                 "items": {
                     "type": "object",
                     "properties": {
                         "type": {"type": "string", "enum": ["create", "update", "delete"]},
-                        "eventId": {"type": "string"},
-                        "title": {"type": "string"},
-                        "start": {"type": "string"},
-                        "end": {"type": "string"},
-                        "description": {"type": "string"},
+                        "eventId": {"type": "string", "description": "Exact visible event ID, or empty string."},
+                        "title": {"type": "string", "description": "Short title under 80 characters. Never pad whitespace."},
+                        "start": {"type": "string", "description": "ISO 8601 datetime with UTC offset, or empty string."},
+                        "end": {"type": "string", "description": "ISO 8601 datetime with UTC offset, or empty string."},
                     },
-                    "required": ["type"],
+                    "required": ["type", "eventId", "title", "start", "end"],
                 },
             },
         },
@@ -597,9 +604,27 @@ def ai_chat():
 
     try:
         raw = gemini_generate(
-            prompt, system_instruction=system, json_mode=True, temperature=0.35, response_schema=schema
+            prompt, system_instruction=system, json_mode=True, temperature=0,
+            response_schema=schema, max_output_tokens=600,
         )
-        result = parse_gemini_json(raw)
+        try:
+            result = parse_gemini_json(raw)
+        except json.JSONDecodeError:
+            retry_prompt = json.dumps({
+                "message": message,
+                "now": datetime.now(timezone.utc).isoformat(),
+                "timezone": context.get("timezone", "UTC"),
+                "visibleEvents": context.get("personalEvents", []),
+            })
+            raw = gemini_generate(
+                retry_prompt,
+                system_instruction=(
+                    "Return one compact calendar action and a supportive reply. Never pad strings, repeat whitespace, "
+                    "or claim the action already succeeded. Use empty strings for unused fields."
+                ),
+                json_mode=True, temperature=0, response_schema=schema, max_output_tokens=600,
+            )
+            result = parse_gemini_json(raw)
         actions = result.get("actions", [])
         service = get_calendar_service()
         available_ids = {
