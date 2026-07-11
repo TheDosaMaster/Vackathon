@@ -98,6 +98,10 @@ export function openGoogleAuthPopup(): Promise<{ success: boolean; error?: strin
       'google-auth',
       `width=${width},height=${height},left=${left},top=${top}`,
     )
+    if (!popup) {
+      resolve({ success: false, error: 'The Google sign-in popup was blocked. Allow popups and try again.' })
+      return
+    }
 
     function onMessage(event: MessageEvent) {
       const source = new URL(event.origin)
@@ -121,7 +125,7 @@ export function openGoogleAuthPopup(): Promise<{ success: boolean; error?: strin
 
     // Fallback: detect popup close via polling (some browsers block postMessage)
     const pollTimer = window.setInterval(() => {
-      if (popup && popup.closed) {
+      if (popup.closed) {
         cleanup()
         resolve({ success: false, error: 'Popup was closed before authentication completed.' })
       }
@@ -274,7 +278,8 @@ async function fetchJson<T>(path: string, signal?: AbortSignal, body?: unknown, 
     body: body ? JSON.stringify(body) : undefined,
   })
   if (!response.ok) {
-    throw new Error(`Backend request failed: ${response.status}`)
+    const errorBody = await response.json().catch(() => null) as { error?: string } | null
+    throw new Error(errorBody?.error || `Backend request failed: ${response.status}`)
   }
   return (await response.json()) as T
 }

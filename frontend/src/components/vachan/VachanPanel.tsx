@@ -53,8 +53,11 @@ export default function VachanPanel({ open, onClose }: { open: boolean; onClose:
       if (reply.calendarChanged) await app.syncCalendar()
       setMessages((current) => [...current, { role: 'bot', text: reply.text }])
     } catch {
-      const reply = respond(question, ctx)
-      setMessages((current) => [...current, { role: 'bot', text: reply.text }])
+      const localReply = respond(question, ctx)
+      setMessages((current) => [...current, {
+        role: 'bot',
+        text: `I'm having trouble reaching Gemini right now. ${localReply.text}`,
+      }])
     } finally {
       setSending(false)
     }

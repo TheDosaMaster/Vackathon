@@ -34,7 +34,27 @@ SCOPES = [
     "https://www.googleapis.com/auth/calendar.events",
 ]
 
-token_store = {}
+TOKEN_PATH = os.path.join(os.path.dirname(__file__), ".google_token.json")
+
+
+def load_saved_token():
+    try:
+        with open(TOKEN_PATH, "r", encoding="utf-8") as token_file:
+            return json.load(token_file)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+
+
+def save_google_token(token_data):
+    temporary_path = f"{TOKEN_PATH}.tmp"
+    with open(temporary_path, "w", encoding="utf-8") as token_file:
+        json.dump(token_data, token_file)
+    os.chmod(temporary_path, 0o600)
+    os.replace(temporary_path, TOKEN_PATH)
+
+
+saved_google_token = load_saved_token()
+token_store = {"google_token": saved_google_token} if saved_google_token else {}
 
 CLIENT_CONFIG = {
     "web": {
@@ -141,6 +161,7 @@ def get_classroom_service():
     if creds.expired and creds.refresh_token:
         creds.refresh(GoogleRequest())
         token_store["google_token"]["token"] = creds.token
+        save_google_token(token_store["google_token"])
 
     return build("classroom", "v1", credentials=creds)
 
@@ -162,6 +183,7 @@ def get_calendar_service():
     if creds.expired and creds.refresh_token:
         creds.refresh(GoogleRequest())
         token_store["google_token"]["token"] = creds.token
+        save_google_token(token_store["google_token"])
 
     return build("calendar", "v3", credentials=creds)
 
@@ -236,6 +258,7 @@ def google_auth_callback():
             "client_secret": creds.client_secret,
             "scopes": list(creds.scopes),
         }
+        save_google_token(token_store["google_token"])
         return _auth_close_page(True)
     except Exception as e:
         return _auth_close_page(False, str(e))
