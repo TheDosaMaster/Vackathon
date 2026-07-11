@@ -30,6 +30,8 @@ export interface Assignment {
   dueAt: string // ISO
   estimatedMinutes: number
   status: AssignmentStatus
+  priorityScore?: number
+  priorityReason?: string
 }
 
 export type EventKind = 'personal' | 'work-session' | 'school' | 'sleep'

@@ -7,6 +7,7 @@ export default defineConfig({
     proxy: {
       '/auth': 'http://127.0.0.1:5001',
       '/classroom': 'http://127.0.0.1:5001',
+      '/calendar': 'http://127.0.0.1:5001',
     },
   },
 })

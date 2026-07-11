@@ -114,9 +114,12 @@ export function generateSchedule({
     return invert(blocked)
   }
 
-  const sorted = [...pending].sort(
-    (a, b) => new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime(),
-  )
+  const sorted = [...pending].sort((a, b) => {
+    const aScore = a.priorityScore ?? 0
+    const bScore = b.priorityScore ?? 0
+    if (aScore !== bScore) return bScore - aScore
+    return new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime()
+  })
 
   const workSessions: CalendarEvent[] = []
   const atRisk = new Set<string>()

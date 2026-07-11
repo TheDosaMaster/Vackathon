@@ -30,6 +30,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/classroom.courses.readonly",
     "https://www.googleapis.com/auth/classroom.student-submissions.me.readonly",
     "https://www.googleapis.com/auth/classroom.student-submissions.students.readonly",
+    "https://www.googleapis.com/auth/calendar.events.readonly",
 ]
 
 token_store = {}
@@ -139,6 +140,27 @@ def get_classroom_service():
         token_store["google_token"]["token"] = creds.token
 
     return build("classroom", "v1", credentials=creds)
+
+
+def get_calendar_service():
+    token_data = token_store.get("google_token")
+    if not token_data:
+        return None
+
+    creds = Credentials(
+        token=token_data["token"],
+        refresh_token=token_data.get("refresh_token"),
+        token_uri=token_data.get("token_uri"),
+        client_id=token_data.get("client_id"),
+        client_secret=token_data.get("client_secret"),
+        scopes=token_data.get("scopes"),
+    )
+
+    if creds.expired and creds.refresh_token:
+        creds.refresh(GoogleRequest())
+        token_store["google_token"]["token"] = creds.token
+
+    return build("calendar", "v3", credentials=creds)
 
 
 # ── Auth ─────────────────────────────────────────────────────────────
@@ -323,6 +345,40 @@ def classroom_summary():
     return jsonify({"summary": summary})
 
 
+# ── Calendar Endpoints ─────────────────────────────────────────────
+
+@app.route("/calendar/events")
+def list_calendar_events():
+    service = get_calendar_service()
+    if not service:
+        return jsonify({"error": "Not authenticated. Visit /auth/google first."}), 401
+
+    now = request.args.get("timeMin", None)
+    if not now:
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+
+    time_max = request.args.get("timeMax", None)
+
+    kwargs = {
+        "calendarId": "primary",
+        "timeMin": now,
+        "singleEvents": True,
+        "orderBy": "startTime",
+        "maxResults": 100,
+    }
+    if time_max:
+        kwargs["timeMax"] = time_max
+
+    try:
+        result = service.events().list(**kwargs).execute()
+        events = result.get("items", [])
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    return jsonify({"events": events})
+
+
 # ── AI Endpoints ────────────────────────────────────────────────────
 
 @app.route("/ai/prioritize-schedule", methods=["POST"])
@@ -424,6 +480,7 @@ def root():
             "courses": "/classroom/courses",
             "assignments": "/classroom/assignments",
             "summary": "/classroom/summary",
+            "calendar": "/calendar/events",
             "prioritize": "/ai/prioritize-schedule",
             "chat": "/ai/chat",
         },
