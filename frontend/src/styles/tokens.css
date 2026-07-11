@@ -1,0 +1,71 @@
+/* Priority:One design tokens — see /DESIGN.md for the full system spec. */
+:root {
+  color-scheme: light;
+
+  /* Neutral — Desk Paper */
+  --color-bg: oklch(90.9% 0.010 119.6);
+  --color-surface: oklch(97% 0.006 119.6);
+  --color-surface-sunken: oklch(86% 0.012 119.6);
+  --color-border: oklch(80% 0.014 119.6);
+  --color-border-strong: oklch(70% 0.018 119.6);
+
+  /* Ink */
+  --color-ink: oklch(28.4% 0.010 355.5);
+  --color-ink-muted: oklch(46% 0.014 355.5);
+  --color-ink-faint: oklch(60% 0.012 355.5);
+
+  /* Steady Blue */
+  --color-blue: oklch(58.1% 0.113 243.6);
+  --color-blue-strong: oklch(46% 0.120 244);
+  --color-blue-wash: oklch(93% 0.030 244);
+
+  /* Signal Red — reserved for genuine deadline risk */
+  --color-alert: oklch(56% 0.190 29);
+  --color-alert-strong: oklch(46% 0.190 29);
+  --color-alert-wash: oklch(93% 0.050 29);
+
+  /* Typography */
+  --font-display: 'Instrument Serif', Georgia, serif;
+  --font-body: 'Instrument Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', monospace;
+
+  --text-display: 2.5rem;
+  --text-display-sm: 1.875rem;
+  --text-headline: 1.5rem;
+  --text-title: 1.125rem;
+  --text-body: 1rem;
+  --text-label: 0.8125rem;
+
+  /* Spacing */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 40px;
+  --space-2xl: 64px;
+
+  /* Shape */
+  --radius-sm: 8px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --radius-pill: 999px;
+
+  /* Elevation */
+  --shadow-floating: 0 12px 32px -8px oklch(28.4% 0.010 355.5 / 0.18);
+  --shadow-lift: 0 2px 8px -2px oklch(28.4% 0.010 355.5 / 0.12);
+
+  /* Motion */
+  --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --duration-fast: 120ms;
+  --duration-base: 220ms;
+  --duration-slow: 420ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 0ms;
+    --duration-base: 0ms;
+    --duration-slow: 0ms;
+  }
+}
