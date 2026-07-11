@@ -1,0 +1,8 @@
+.DS_Store
+.venv/
+backend/.env
+backend/.google_token.json
+backend/__pycache__/
+frontend/node_modules/
+frontend/dist/
+*.inspect.ndjson

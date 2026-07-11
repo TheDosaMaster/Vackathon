@@ -3,6 +3,7 @@ import json
 import re
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from flask import Flask, request, jsonify, redirect
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -11,7 +12,7 @@ from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 from google.auth.transport.requests import Request as GoogleRequest
 
-load_dotenv()
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 # Google remaps classroom.coursework.* scopes to classroom.student-submissions.*
 # This tells oauthlib not to raise an error when the returned scope differs.
@@ -24,13 +25,13 @@ GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:5000/auth/google/callback")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 SCOPES = [
     "https://www.googleapis.com/auth/classroom.courses.readonly",
     "https://www.googleapis.com/auth/classroom.student-submissions.me.readonly",
     "https://www.googleapis.com/auth/classroom.student-submissions.students.readonly",
-    "https://www.googleapis.com/auth/calendar.events.readonly",
+    "https://www.googleapis.com/auth/calendar.events",
 ]
 
 token_store = {}
@@ -45,7 +46,7 @@ CLIENT_CONFIG = {
 }
 
 
-def gemini_generate(prompt, system_instruction=None, json_mode=False, temperature=0.35):
+def gemini_generate(prompt, system_instruction=None, json_mode=False, temperature=0.35, response_schema=None):
     if not GEMINI_API_KEY:
         raise RuntimeError("GEMINI_API_KEY is not configured.")
 
@@ -60,6 +61,8 @@ def gemini_generate(prompt, system_instruction=None, json_mode=False, temperatur
         payload["systemInstruction"] = {"parts": [{"text": system_instruction}]}
     if json_mode:
         payload["generationConfig"]["responseMimeType"] = "application/json"
+    if response_schema:
+        payload["generationConfig"]["responseSchema"] = response_schema
 
     url = (
         "https://generativelanguage.googleapis.com/v1beta/"
@@ -163,6 +166,25 @@ def get_calendar_service():
     return build("calendar", "v3", credentials=creds)
 
 
+def calendar_event_payload(title, start, end, description=""):
+    """Build a minimal timed event after validating Gemini/user supplied ISO datetimes."""
+    start_dt = datetime.fromisoformat(str(start).replace("Z", "+00:00"))
+    end_dt = datetime.fromisoformat(str(end).replace("Z", "+00:00"))
+    if start_dt.tzinfo is None or end_dt.tzinfo is None:
+        raise ValueError("Calendar times must include a timezone offset.")
+    if end_dt <= start_dt:
+        raise ValueError("Calendar event end must be after its start.")
+    if (end_dt - start_dt).total_seconds() > 24 * 60 * 60:
+        raise ValueError("Calendar events created by Vachan cannot exceed 24 hours.")
+    return {
+        "summary": str(title).strip()[:200] or "Priority:One event",
+        "description": str(description).strip()[:2000],
+        "start": {"dateTime": start_dt.isoformat()},
+        "end": {"dateTime": end_dt.isoformat()},
+        "extendedProperties": {"private": {"priorityOne": "true"}},
+    }
+
+
 # ── Auth ─────────────────────────────────────────────────────────────
 
 @app.route("/auth/google")
@@ -186,12 +208,15 @@ def google_auth():
 def google_auth_callback():
     code = request.args.get("code")
     error = request.args.get("error")
+    state = request.args.get("state")
 
     if error:
         return _auth_close_page(False, f"Google returned an error: {error}")
 
     if not code:
         return _auth_close_page(False, "No authorization code received")
+    if not state or state != token_store.get("oauth_state"):
+        return _auth_close_page(False, "Invalid OAuth state. Please restart the connection.")
 
     try:
         flow = Flow.from_client_config(
@@ -214,6 +239,15 @@ def google_auth_callback():
         return _auth_close_page(True)
     except Exception as e:
         return _auth_close_page(False, str(e))
+
+
+@app.route("/auth/status")
+def auth_status():
+    token = token_store.get("google_token")
+    return jsonify({
+        "authenticated": bool(token),
+        "calendarWritable": bool(token and "https://www.googleapis.com/auth/calendar.events" in token.get("scopes", [])),
+    })
 
 
 def _auth_close_page(success: bool, error: str = ""):
@@ -379,6 +413,57 @@ def list_calendar_events():
     return jsonify({"events": events})
 
 
+@app.route("/calendar/events", methods=["POST"])
+def create_calendar_event():
+    service = get_calendar_service()
+    if not service:
+        return jsonify({"error": "Google Calendar is not connected."}), 401
+    payload = request.get_json(silent=True) or {}
+    try:
+        body = calendar_event_payload(
+            payload.get("title"), payload.get("start"), payload.get("end"), payload.get("description", "")
+        )
+        event = service.events().insert(calendarId="primary", body=body).execute()
+        return jsonify({"event": event}), 201
+    except (ValueError, TypeError) as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/calendar/events/<event_id>", methods=["PATCH"])
+def update_calendar_event(event_id):
+    service = get_calendar_service()
+    if not service:
+        return jsonify({"error": "Google Calendar is not connected."}), 401
+    payload = request.get_json(silent=True) or {}
+    try:
+        current = service.events().get(calendarId="primary", eventId=event_id).execute()
+        title = payload.get("title", current.get("summary", "Priority:One event"))
+        start = payload.get("start", current.get("start", {}).get("dateTime"))
+        end = payload.get("end", current.get("end", {}).get("dateTime"))
+        description = payload.get("description", current.get("description", ""))
+        body = calendar_event_payload(title, start, end, description)
+        event = service.events().patch(calendarId="primary", eventId=event_id, body=body).execute()
+        return jsonify({"event": event})
+    except (ValueError, TypeError) as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/calendar/events/<event_id>", methods=["DELETE"])
+def delete_calendar_event(event_id):
+    service = get_calendar_service()
+    if not service:
+        return jsonify({"error": "Google Calendar is not connected."}), 401
+    try:
+        service.events().delete(calendarId="primary", eventId=event_id).execute()
+        return jsonify({"deleted": True, "eventId": event_id})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 # ── AI Endpoints ────────────────────────────────────────────────────
 
 @app.route("/ai/prioritize-schedule", methods=["POST"])
@@ -445,24 +530,103 @@ def ai_chat():
     context = payload.get("context", {})
     history = payload.get("history", [])
     system = (
-        "You are Vachan, a calm planning companion for a student. Be concise, warm, and practical. "
-        "Use the provided schedule context. Do not invent assignments. If the student is stressed, "
-        "ground them and suggest one next action."
+        "You are Vachan, Priority:One's deeply supportive planning companion. Be calm, validating, concise, "
+        "and practical without sounding clinical or patronizing. Use only the supplied assignments and calendar "
+        "events. When the student clearly asks to add, move, rename, or delete calendar time, return the minimum "
+        "required Google Calendar actions. Never modify school or sleep blocks. Never claim an action succeeded; "
+        "the server will append the actual result. Resolve relative dates using currentTime and timezone."
     )
     prompt = json.dumps({
         "studentMessage": message,
         "conversationHistory": history[-8:] if isinstance(history, list) else [],
         "context": context,
+        "currentTime": datetime.now(timezone.utc).isoformat(),
         "responseRules": [
-            "Return plain text only.",
-            "Keep the reply under 90 words unless the user asks for detail.",
-            "Mention specific assignments or times only when they are present in context.",
+            "Keep text under 90 words unless the user asks for detail.",
+            "Use ISO 8601 timestamps with timezone offsets for actions.",
+            "For update/delete, use only an event id present in context.personalEvents.",
+            "Return no actions when the student is only asking for advice or emotional support.",
         ],
     })
 
+    schema = {
+        "type": "object",
+        "properties": {
+            "text": {"type": "string"},
+            "actions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "type": {"type": "string", "enum": ["create", "update", "delete"]},
+                        "eventId": {"type": "string"},
+                        "title": {"type": "string"},
+                        "start": {"type": "string"},
+                        "end": {"type": "string"},
+                        "description": {"type": "string"},
+                    },
+                    "required": ["type"],
+                },
+            },
+        },
+        "required": ["text", "actions"],
+    }
+
     try:
-        text = gemini_generate(prompt, system_instruction=system, temperature=0.55)
-        return jsonify({"provider": "gemini", "model": GEMINI_MODEL, "text": text})
+        raw = gemini_generate(
+            prompt, system_instruction=system, json_mode=True, temperature=0.35, response_schema=schema
+        )
+        result = parse_gemini_json(raw)
+        actions = result.get("actions", [])
+        service = get_calendar_service()
+        available_ids = {
+            str(event.get("id")) for event in context.get("personalEvents", []) if event.get("id")
+        }
+        action_results = []
+        for action in actions[:3]:
+            kind = action.get("type")
+            try:
+                if not service:
+                    raise RuntimeError("Google Calendar is not connected.")
+                if kind == "create":
+                    body = calendar_event_payload(
+                        action.get("title"), action.get("start"), action.get("end"), action.get("description", "Created by Vachan")
+                    )
+                    event = service.events().insert(calendarId="primary", body=body).execute()
+                    action_results.append({"type": kind, "success": True, "eventId": event.get("id"), "title": event.get("summary")})
+                elif kind == "update":
+                    event_id = str(action.get("eventId", ""))
+                    if event_id not in available_ids:
+                        raise ValueError("Vachan can only update a visible calendar event.")
+                    current = service.events().get(calendarId="primary", eventId=event_id).execute()
+                    body = calendar_event_payload(
+                        action.get("title") or current.get("summary"),
+                        action.get("start") or current.get("start", {}).get("dateTime"),
+                        action.get("end") or current.get("end", {}).get("dateTime"),
+                        action.get("description", current.get("description", "")),
+                    )
+                    event = service.events().patch(calendarId="primary", eventId=event_id, body=body).execute()
+                    action_results.append({"type": kind, "success": True, "eventId": event_id, "title": event.get("summary")})
+                elif kind == "delete":
+                    event_id = str(action.get("eventId", ""))
+                    if event_id not in available_ids:
+                        raise ValueError("Vachan can only delete a visible calendar event.")
+                    service.events().delete(calendarId="primary", eventId=event_id).execute()
+                    action_results.append({"type": kind, "success": True, "eventId": event_id})
+            except Exception as action_error:
+                action_results.append({"type": kind, "success": False, "error": str(action_error)})
+
+        succeeded = sum(1 for item in action_results if item.get("success"))
+        failed = len(action_results) - succeeded
+        suffix = ""
+        if succeeded:
+            suffix += f"\n\nDone — I updated {succeeded} Google Calendar event{'s' if succeeded != 1 else ''}."
+        if failed:
+            suffix += f"\n\nI couldn't complete {failed} calendar change{'s' if failed != 1 else ''}. Please reconnect Google Calendar and try again."
+        return jsonify({
+            "provider": "gemini", "model": GEMINI_MODEL, "text": str(result.get("text", "")).strip() + suffix,
+            "actions": action_results, "calendarChanged": succeeded > 0,
+        })
     except Exception as e:
         return jsonify({
             "provider": "fallback",
@@ -477,6 +641,7 @@ def root():
         "status": "online",
         "endpoints": {
             "auth": "/auth/google",
+            "authStatus": "/auth/status",
             "courses": "/classroom/courses",
             "assignments": "/classroom/assignments",
             "summary": "/classroom/summary",

@@ -6,9 +6,9 @@ import VachanPanel from '../vachan/VachanPanel'
 import styles from './AppShell.module.css'
 
 const NAV_ITEMS = [
-  { to: '/today', label: 'Today', icon: LayoutGrid },
-  { to: '/week', label: 'This week', icon: CalendarDays },
-  { to: '/assignments', label: 'Assignments', icon: CheckSquare },
+  { to: '/app/today', label: 'Today', icon: LayoutGrid },
+  { to: '/app/week', label: 'This week', icon: CalendarDays },
+  { to: '/app/assignments', label: 'Assignments', icon: CheckSquare },
 ]
 
 export default function AppShell() {
@@ -38,7 +38,7 @@ export default function AppShell() {
 
         <div className={styles.sidebarFooter}>
           <NavLink
-            to="/settings"
+            to="/app/settings"
             className={({ isActive }) => `${styles.navItem} ${isActive ? styles.navItemActive : ''}`}
           >
             <SettingsIcon size={17} strokeWidth={2} aria-hidden="true" />

@@ -1,12 +1,14 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import type { Assignment, AssignmentStatus, CalendarEvent, ClassInfo, SchoolHours, SleepWindow } from '../types'
+import { DEFAULT_SCHOOL_HOURS, DEFAULT_SLEEP_WINDOW } from '../data/defaults'
 import {
-  CLASSES,
-  DEFAULT_SCHOOL_HOURS,
-  DEFAULT_SLEEP_WINDOW,
-  createMockAssignments,
-} from '../data/mockData'
-import { fetchCalendarEvents, fetchClassroomData, prioritizeAssignments } from '../lib/api'
+  createCalendarEvent,
+  deleteCalendarEvent,
+  fetchCalendarEvents,
+  fetchClassroomData,
+  prioritizeAssignments,
+  updateCalendarEvent,
+} from '../lib/api'
 import { generateSchedule } from '../lib/scheduler'
 
 export type OnboardingStep = 'connect' | 'school-hours' | 'done'
@@ -28,10 +30,9 @@ interface PersistedState {
   studentName: string
 }
 
-const STORAGE_KEY = 'priority-one-state-v1'
+const STORAGE_KEY = 'priority-one-state-v2'
 
 function loadInitialState(): PersistedState {
-  const now = new Date()
   const fallback: PersistedState = {
     isSignedIn: false,
     onboardingStep: 'connect',
@@ -39,9 +40,9 @@ function loadInitialState(): PersistedState {
     schoolHours: DEFAULT_SCHOOL_HOURS,
     sleepWindow: DEFAULT_SLEEP_WINDOW,
     personalEvents: [],
-    assignments: createMockAssignments(now),
-    classes: CLASSES,
-    studentName: 'Jordan',
+    assignments: [],
+    classes: [],
+    studentName: '',
   }
 
   try {
@@ -73,9 +74,10 @@ interface AppContextValue {
   saveSchoolHours: (hours: SchoolHours, sleep: SleepWindow) => void
   updateSchoolHours: (hours: SchoolHours) => void
   updateSleepWindow: (sleep: SleepWindow) => void
-  addPersonalEvent: (event: Omit<CalendarEvent, 'id' | 'kind' | 'editable'>) => void
-  updatePersonalEvent: (id: string, patch: Partial<Pick<CalendarEvent, 'title' | 'start' | 'end'>>) => void
-  deletePersonalEvent: (id: string) => void
+  addPersonalEvent: (event: Omit<CalendarEvent, 'id' | 'kind' | 'editable'>) => Promise<void>
+  updatePersonalEvent: (id: string, patch: Partial<Pick<CalendarEvent, 'title' | 'start' | 'end'>>) => Promise<void>
+  deletePersonalEvent: (id: string) => Promise<void>
+  syncCalendar: () => Promise<void>
   setAssignmentStatus: (id: string, status: AssignmentStatus) => void
 }
 
@@ -103,28 +105,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const connectAccounts = useCallback(async () => {
-    let nextClasses = state.classes
-    let nextAssignments = state.assignments
-    let nextPersonalEvents = state.personalEvents
-
-    try {
-      const { classes, assignments } = await fetchClassroomData()
-      nextClasses = classes.length ? classes : nextClasses
-      nextAssignments = assignments.length ? assignments : nextAssignments
-    } catch {
-      // Keep the local demo data when the Flask API is offline or Google auth has not completed.
-    }
-
-    try {
-      const timeMin = new Date().toISOString()
-      const timeMax = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString()
-      const events = await fetchCalendarEvents(timeMin, timeMax)
-      if (events.length) {
-        nextPersonalEvents = events
-      }
-    } catch {
-      // Calendar fetch failed - keep existing events (empty or manual).
-    }
+    const [{ classes: nextClasses, assignments: classroomAssignments }, nextPersonalEvents] = await Promise.all([
+      fetchClassroomData(),
+      fetchCalendarEvents(
+        new Date().toISOString(),
+        new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString(),
+      ),
+    ])
+    let nextAssignments = classroomAssignments
 
     try {
       const prioritized = await prioritizeAssignments({
@@ -135,9 +123,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         now,
       })
       nextAssignments = prioritized.assignments
-    } catch {
-      // The deterministic scheduler still works when the AI service is unavailable.
-    }
+    } catch { /* Scheduling remains deterministic if Gemini prioritization is unavailable. */ }
 
     setState((s) => ({
       ...s,
@@ -147,7 +133,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       connectedAccounts: { calendar: true, classroom: true },
       onboardingStep: 'school-hours',
     }))
-  }, [now, state.assignments, state.classes, state.personalEvents, state.schoolHours, state.sleepWindow])
+  }, [now, state.schoolHours, state.sleepWindow])
 
   const saveSchoolHours = useCallback((hours: SchoolHours, sleep: SleepWindow) => {
     setState((s) => ({ ...s, schoolHours: hours, sleepWindow: sleep, onboardingStep: 'done' }))
@@ -161,27 +147,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setState((s) => ({ ...s, sleepWindow: sleep }))
   }, [])
 
-  const addPersonalEvent = useCallback((event: Omit<CalendarEvent, 'id' | 'kind' | 'editable'>) => {
-    setState((s) => ({
-      ...s,
-      personalEvents: [
-        ...s.personalEvents,
-        { ...event, id: `e-${Date.now()}-${Math.round(Math.random() * 1e6)}`, kind: 'personal', editable: true },
-      ],
-    }))
+  const syncCalendar = useCallback(async () => {
+    const events = await fetchCalendarEvents(
+      new Date().toISOString(),
+      new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString(),
+    )
+    setState((s) => ({ ...s, personalEvents: events }))
+  }, [])
+
+  const addPersonalEvent = useCallback(async (event: Omit<CalendarEvent, 'id' | 'kind' | 'editable'>) => {
+    const created = await createCalendarEvent(event)
+    setState((s) => ({ ...s, personalEvents: [...s.personalEvents, created] }))
   }, [])
 
   const updatePersonalEvent = useCallback(
-    (id: string, patch: Partial<Pick<CalendarEvent, 'title' | 'start' | 'end'>>) => {
-      setState((s) => ({
-        ...s,
-        personalEvents: s.personalEvents.map((e) => (e.id === id ? { ...e, ...patch } : e)),
-      }))
+    async (id: string, patch: Partial<Pick<CalendarEvent, 'title' | 'start' | 'end'>>) => {
+      const updated = await updateCalendarEvent(id, patch)
+      setState((s) => ({ ...s, personalEvents: s.personalEvents.map((e) => (e.id === id ? updated : e)) }))
     },
     [],
   )
 
-  const deletePersonalEvent = useCallback((id: string) => {
+  const deletePersonalEvent = useCallback(async (id: string) => {
+    await deleteCalendarEvent(id)
     setState((s) => ({ ...s, personalEvents: s.personalEvents.filter((e) => e.id !== id) }))
   }, [])
 
@@ -225,6 +213,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     addPersonalEvent,
     updatePersonalEvent,
     deletePersonalEvent,
+    syncCalendar,
     setAssignmentStatus,
   }
 

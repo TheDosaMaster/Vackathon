@@ -28,9 +28,15 @@ export default function ConnectAccounts() {
     }
 
     setStatus('syncing')
-    await connectAccounts()
-    setSyncing(false)
-    nav('/onboarding/school-hours')
+    try {
+      await connectAccounts()
+      setSyncing(false)
+      nav('/onboarding/school-hours')
+    } catch (error) {
+      setStatus('error')
+      setErrorMsg(error instanceof Error ? error.message : 'Google data could not be synced.')
+      setSyncing(false)
+    }
   }
 
   return (

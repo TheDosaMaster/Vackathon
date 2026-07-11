@@ -6,6 +6,7 @@ import SchoolHoursSetup from './components/onboarding/SchoolHoursSetup'
 import AppShell from './components/layout/AppShell'
 import Dashboard from './components/dashboard/Dashboard'
 import Settings from './components/settings/Settings'
+import PitchDeck from './components/pitch/PitchDeck'
 
 function OnboardingGate({ step, children }: { step: 'connect' | 'school-hours'; children: React.ReactNode }) {
   const { isSignedIn, onboardingStep } = useApp()
@@ -27,6 +28,7 @@ function ProtectedShell() {
 function AppRoutes() {
   return (
     <Routes>
+      <Route path="/" element={<PitchDeck />} />
       <Route path="/sign-in" element={<SignIn />} />
       <Route
         path="/onboarding/connect"
@@ -44,7 +46,7 @@ function AppRoutes() {
           </OnboardingGate>
         }
       />
-      <Route path="/" element={<ProtectedShell />}>
+      <Route path="/app" element={<ProtectedShell />}>
         <Route index element={<Navigate to="today" replace />} />
         <Route path="today" element={<Dashboard view="today" />} />
         <Route path="week" element={<Dashboard view="week" />} />

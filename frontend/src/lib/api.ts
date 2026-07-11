@@ -3,6 +3,7 @@ import type { Assignment, CalendarEvent, ClassInfo, ScheduleWarning, SchoolHours
 export type BackendStatus = 'checking' | 'online' | 'offline'
 
 const API_URL = import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:5001'
+const API_ORIGIN = new URL(API_URL, window.location.origin).origin
 
 interface ClassroomCourse {
   id: string
@@ -54,10 +55,20 @@ export interface ChatMessagePayload {
   text: string
 }
 
+export interface CalendarActionResult {
+  type: 'create' | 'update' | 'delete'
+  success: boolean
+  eventId?: string
+  title?: string
+  error?: string
+}
+
 interface ChatResponse {
   provider: 'gemini' | 'fallback'
   model?: string
   text: string
+  actions?: CalendarActionResult[]
+  calendarChanged?: boolean
 }
 
 export async function checkBackend(signal?: AbortSignal): Promise<boolean> {
@@ -89,15 +100,16 @@ export function openGoogleAuthPopup(): Promise<{ success: boolean; error?: strin
     )
 
     function onMessage(event: MessageEvent) {
+      const source = new URL(event.origin)
+      const expected = new URL(API_ORIGIN)
+      const localAlias = ['localhost', '127.0.0.1'].includes(source.hostname)
+        && ['localhost', '127.0.0.1'].includes(expected.hostname)
+        && source.port === expected.port
+      if (event.origin !== API_ORIGIN && !localAlias) return
       if (event.data && typeof event.data.success === 'boolean') {
         cleanup()
         resolve(event.data)
       }
-    }
-
-    function onClosed() {
-      cleanup()
-      resolve({ success: false, error: 'Popup was closed before authentication completed.' })
     }
 
     function cleanup() {
@@ -134,7 +146,7 @@ export async function fetchClassroomData(signal?: AbortSignal): Promise<{
   }))
 
   const assignments = (assignmentsResponse.assignments ?? [])
-    .filter((assignment) => assignment.id && assignment.courseId && !('error' in assignment))
+    .filter((assignment) => assignment.id && assignment.courseId && assignment.dueDate && !('error' in assignment))
     .map(mapAssignment)
 
   return { classes, assignments }
@@ -170,8 +182,32 @@ export async function fetchCalendarEvents(
     start: event.start?.dateTime ?? event.start?.date ?? new Date().toISOString(),
     end: event.end?.dateTime ?? event.end?.date ?? new Date().toISOString(),
     kind: 'personal' as const,
-    editable: false,
+    editable: true,
   }))
+}
+
+export async function createCalendarEvent(
+  event: Pick<CalendarEvent, 'title' | 'start' | 'end'> & { description?: string },
+): Promise<CalendarEvent> {
+  const response = await fetchJson<{ event: GoogleCalendarEvent }>('/calendar/events', undefined, event)
+  return mapCalendarEvent(response.event)
+}
+
+export async function updateCalendarEvent(
+  id: string,
+  patch: Partial<Pick<CalendarEvent, 'title' | 'start' | 'end'>>,
+): Promise<CalendarEvent> {
+  const response = await fetchJson<{ event: GoogleCalendarEvent }>(
+    `/calendar/events/${encodeURIComponent(id)}`,
+    undefined,
+    patch,
+    'PATCH',
+  )
+  return mapCalendarEvent(response.event)
+}
+
+export async function deleteCalendarEvent(id: string): Promise<void> {
+  await fetchJson(`/calendar/events/${encodeURIComponent(id)}`, undefined, undefined, 'DELETE')
 }
 
 export async function prioritizeAssignments(
@@ -230,10 +266,10 @@ export async function sendChatMessage(
   })
 }
 
-async function fetchJson<T>(path: string, signal?: AbortSignal, body?: unknown): Promise<T> {
+async function fetchJson<T>(path: string, signal?: AbortSignal, body?: unknown, method?: string): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, {
     signal,
-    method: body ? 'POST' : 'GET',
+    method: method ?? (body ? 'POST' : 'GET'),
     headers: body ? { 'Content-Type': 'application/json' } : undefined,
     body: body ? JSON.stringify(body) : undefined,
   })
@@ -241,6 +277,17 @@ async function fetchJson<T>(path: string, signal?: AbortSignal, body?: unknown):
     throw new Error(`Backend request failed: ${response.status}`)
   }
   return (await response.json()) as T
+}
+
+function mapCalendarEvent(event: GoogleCalendarEvent): CalendarEvent {
+  return {
+    id: event.id ?? '',
+    title: event.summary ?? 'Untitled event',
+    start: event.start?.dateTime ?? event.start?.date ?? new Date().toISOString(),
+    end: event.end?.dateTime ?? event.end?.date ?? new Date().toISOString(),
+    kind: 'personal',
+    editable: true,
+  }
 }
 
 function mapAssignment(assignment: ClassroomAssignment): Assignment {
@@ -262,10 +309,7 @@ function classroomDueToIso(
   dueTime?: ClassroomAssignment['dueTime'],
 ): string {
   if (!dueDate?.year || !dueDate.month || !dueDate.day) {
-    const fallback = new Date()
-    fallback.setDate(fallback.getDate() + 7)
-    fallback.setHours(23, 59, 0, 0)
-    return fallback.toISOString()
+    throw new Error('Google Classroom assignment has no due date.')
   }
 
   const due = new Date(
