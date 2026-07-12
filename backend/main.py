@@ -509,13 +509,18 @@ def prioritize_schedule():
     system = (
         "You are a scheduling assistant for students. Prioritize school assignments "
         "using due date urgency, effort, current status, risk, and protected school/sleep time. "
+        "Spread work across multiple days — never pile multiple assignments onto the same day. "
         "Return only valid JSON."
     )
     prompt = json.dumps({
         "task": (
             "Return JSON with keys summary and priorities. priorities must be an array of "
             "objects with id, priorityScore from 0-100, priorityReason under 18 words, and "
-            "recommendedMinutes. Include every assignment exactly once."
+            "recommendedMinutes. Include every assignment exactly once. "
+            "IMPORTANT: Split recommendedMinutes so work is spread across available days "
+            "before the due date. Do not concentrate all work on a single day — aim for "
+            "30-90 minute sessions spread across multiple days. If an assignment needs 3 hours, "
+            "split it into ~45-minute chunks across different days."
         ),
         "now": payload.get("now"),
         "assignments": assignments,
